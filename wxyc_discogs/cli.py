@@ -123,13 +123,13 @@ def getWxycStatusForRelease(artist: str, title: str) -> bool:
         headers["Authorization"] = f"{token}"
         
     response = requests.get(
-        f"http://api.wxyc.org/library?artist_name={artist}&album_title={title}&n=1",
+        f"http://api.wxyc.org/library?artist_name={artist}&album_title={title}&n=10",
         headers=headers
     )
     response_json = response.json()
 
     for release in response_json:
-        if release.get("artist_dist", 1) < 0.1 and release.get("album_dist", 1) < 0.1:
+        if (release.get("artist_dist", 1) <= 0.7 and release.get("album_dist", 1) < 0.1) :
             return True
 
     return False
