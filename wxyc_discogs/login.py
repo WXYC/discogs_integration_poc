@@ -37,8 +37,10 @@ def authenticate(username: str, password: str) -> str:
                 "session": response_data['Session']
             }
         }
-
-    access_token = str(response_data['AuthenticationResult'].get('AccessToken'))
+    elif 'AuthenticationResult' in response_data:
+        access_token = str(response_data['AuthenticationResult'].get('AccessToken'))
+    else:
+        return None
 
     return access_token
 

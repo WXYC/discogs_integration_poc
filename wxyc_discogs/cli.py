@@ -197,14 +197,20 @@ def display_results(stdscr, results: List[Dict], current_page: int, total_pages:
     # Refresh the screen
     stdscr.refresh()
 
-def get_input(stdscr, prompt: str) -> str:
+def get_input(stdscr, prompt: str, secret: bool = False) -> str:
     stdscr.clear()
     stdscr.addstr(0, 0, prompt)
     stdscr.refresh()
     
-    curses.echo()  # Enable echoing of characters
-    input_str = stdscr.getstr(1, 0).decode('utf-8')
-    curses.noecho()  # Disable echoing of characters
+    if secret:
+        curses.curs_set(1)
+        curses.noecho() 
+        input_str = stdscr.getstr(1, 0).decode('utf-8')
+    else:
+        curses.curs_set(1)
+        curses.echo()
+        input_str = stdscr.getstr(1, 0).decode('utf-8')
+        curses.noecho()
     
     return input_str
 
@@ -220,9 +226,15 @@ def main(stdscr):
 
     # Get WXYC authentication token
     username = get_input(stdscr, "Enter your username: ")
-    password = get_input(stdscr, "Enter your password: ")
+    password = get_input(stdscr, "Enter your password: ", secret=True)
     global token 
     token = authenticate(username, password)
+    if token is None:
+        stdscr.clear()
+        stdscr.addstr(0, 0, "Error: Incorrect username or password")
+        stdscr.refresh()
+        stdscr.getch()
+        sys.exit(1)
     
     # Get API credentials from environment variables
     key = os.getenv("DISCOGS_KEY")
