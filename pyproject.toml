@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wxyc-discogs"
+version = "0.1.0"
+description = "A command-line tool for searching Discogs and checking WXYC library status"
+readme = "README.md"
+requires-python = ">=3.8"
+license = "GPL-3.0-or-later"
+authors = [
+    { name = "Your Name", email = "your.email@example.com" }
+]
+dependencies = [
+    "requests>=2.31.0",
+    "python-dotenv>=1.0.0",
+    "curses-menu>=0.5.0",
+    "jwt>=1.3.1"
+]
+
+[project.scripts]
+wxyc-discogs = "wxyc_discogs.cli:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["wxyc_discogs"] 
