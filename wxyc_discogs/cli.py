@@ -69,9 +69,11 @@ class DiscogsSearch:
 
         self.total_pages = response.json().get("pagination", {}).get("pages", 1)
 
-        albums = response.json().get("results", [])
+        albums = self.process_albums(response.json().get("results", []))
 
-        return self.process_albums(albums)
+        self.cached_results[page] = albums
+
+        return albums
 
     def process_albums(self, albums: List[Dict]) -> List[Dict]:
         for album in albums:
@@ -93,7 +95,6 @@ class DiscogsSearch:
                 page
             )
             loading_screen.stop()
-            self.cached_results[page] = results
         return self.cached_results[page]
 
     def next_page(self, loading_screen: LoadingScreen) -> List[Dict]:
