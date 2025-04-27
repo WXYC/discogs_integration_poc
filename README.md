@@ -40,4 +40,5 @@ Controls:
 - `n`: Next page
 - `b`: Previous page
 - `s`: New search
+- `w`: Wxyc Library View
 - `q` or `ESC`: Quit
