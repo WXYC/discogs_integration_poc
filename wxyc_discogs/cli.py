@@ -4,9 +4,12 @@ import os
 import sys
 import time
 import threading
+import math
+import concurrent.futures
 from typing import Dict, List, Optional
 import curses
 from dotenv import load_dotenv
+import re
 from wxyc_discogs.login import authenticate
 
 
@@ -33,9 +36,10 @@ class LoadingScreen:
 
     def _animate(self):
         i = 0
+        max_y, max_x = self.stdscr.getmaxyx()
         while self.is_loading:
             self.stdscr.clear()
-            self.stdscr.addstr(0, 0, "Loading" + "." * (i % 4))
+            self.stdscr.addstr(max_y//2, math.floor(max_x/2.25), "Loading" + "." * (i % 4))
             self.stdscr.refresh()
             time.sleep(0.4)
             i += 1
@@ -53,8 +57,15 @@ class DiscogsSearch:
         self.total_pages = 1
         self.cached_results: Dict[int, List[Dict]] = {}
         self.current_search_params = {}
+        self.wxyc_releases = []
+        self.wxyc_current_page = 1
+        self.wxyc_total_pages = 1
+        self.wxyc_releases_per_page = 10
 
     def search(self, artist: str, track: str, page: int = 1) -> Dict:
+        if artist.casefold() == "Various Artists".casefold():
+            artist = "Various"
+
         params = {
             "artist": artist,
             "track": track,
@@ -81,9 +92,24 @@ class DiscogsSearch:
             compound_title = album.get("title", "N/A")
 
             album["artist"] = compound_title.split(" - ")[0]
+            album["artist"] = re.sub(r"\(\d+\)", "", album["artist"])
             album["title"] = compound_title.split(" - ")[1]
 
-            album["wxyc_status"] = getWxycStatusForRelease(album["artist"], album["title"])
+        # Process WXYC status checks in parallel
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_album = {
+                executor.submit(getWxycStatusForRelease, album["artist"], album["title"]): album 
+                for album in albums
+            }
+            
+            for future in concurrent.futures.as_completed(future_to_album):
+                album = future_to_album[future]
+                try:
+                    album["wxyc_status"] = future.result()
+                except Exception as e:
+                    album["wxyc_status"] = False
+                    print(f"Error checking WXYC status for {album['artist']} - {album['title']}: {e}")
+
         return albums
 
     def get_page(self, page: int, loading_screen: LoadingScreen) -> List[Dict]:
@@ -115,34 +141,65 @@ class DiscogsSearch:
         self.total_pages = 1
         self.current_search_params = {}
 
+    def fetch_wxyc_releases(self, artist: str):
+        self.wxyc_releases = getWxycReleasesForArtist(artist)
+        self.wxyc_total_pages = (len(self.wxyc_releases) + self.wxyc_releases_per_page - 1) // self.wxyc_releases_per_page
+        self.wxyc_current_page = 1
 
+    def get_wxyc_page(self, page: int) -> List[Dict]:
+        start_idx = (page - 1) * self.wxyc_releases_per_page
+        end_idx = start_idx + self.wxyc_releases_per_page
+        return self.wxyc_releases[start_idx:end_idx]
+
+    def next_wxyc_page(self) -> List[Dict]:
+        if self.wxyc_current_page < self.wxyc_total_pages:
+            self.wxyc_current_page += 1
+        return self.get_wxyc_page(self.wxyc_current_page)
+
+    def previous_wxyc_page(self) -> List[Dict]:
+        if self.wxyc_current_page > 1:
+            self.wxyc_current_page -= 1
+        return self.get_wxyc_page(self.wxyc_current_page)
 
 def getWxycStatusForRelease(artist: str, title: str) -> bool:
     headers = {}
     if token:
         headers["Authorization"] = f"{token}"
         
+    artist_param = f"&artist_name={artist}" if artist != "Various" else ""
     response = requests.get(
-        f"http://api.wxyc.org/library?artist_name={artist}&album_title={title}&n=10",
+        f"http://api.wxyc.org/library?album_title={title}{artist_param}&n=10",
         headers=headers
     )
     response_json = response.json()
 
     for release in response_json:
-        if (release.get("artist_dist", 1) <= 0.7 and release.get("album_dist", 1) < 0.1) :
+        if (artist == "Various" or (release.get("artist_dist", 1) <= 0.7)) and release.get("album_dist", 1) < 0.2 :
             return True
 
     return False
 
-def display_loading(stdscr):
-    stdscr.clear()
-    for i in range(4):
-        stdscr.addstr(0, 0, "Loading" + "." * i)
-        stdscr.refresh()
-        time.sleep(0.6)
-    stdscr.refresh()
-    
-def display_results(stdscr, results: List[Dict], current_page: int, total_pages: int):
+def getWxycReleasesForArtist(artist: str) -> List[Dict]:
+    headers = {}
+    if token:
+        headers["Authorization"] = f"{token}"
+        
+    response = requests.get(
+        f"http://api.wxyc.org/library?artist_name={artist}&n=100",
+        headers=headers
+    )
+    response_json = response.json()
+
+    return list(map(lambda x: {
+        "title": x.get("album_title", "N/A"),
+        "artist": x.get("artist_name", "N/A"),
+        "year": x.get("year", "N/A"),
+        "label": x.get("label", "N/A"),
+        "format": [x.get("format_name", "N/A")],
+        "wxyc_status": True
+    }, response_json))
+
+def display_results(stdscr, results: List[Dict], current_page: int, total_pages: int, show_wxyc: bool = False):
     # Clear the screen
     stdscr.clear()
     
@@ -169,6 +226,9 @@ def display_results(stdscr, results: List[Dict], current_page: int, total_pages:
     
     # Print separator line
     stdscr.addstr(1, 0, "-" * max_x)
+
+    if not results:
+        stdscr.addstr(max_y//2, max_x//2, "No results found", curses.A_BOLD)
     
     # Print results
     for i, result in enumerate(results):
@@ -193,7 +253,11 @@ def display_results(stdscr, results: List[Dict], current_page: int, total_pages:
     # Print page info and controls
     controls_line = max_y - 2
     stdscr.addstr(controls_line, 0, f"Page {current_page} of {total_pages}")
-    stdscr.addstr(controls_line + 1, 0, "Controls: [n]ext, [b]ack, [s]earch, [q]uit")
+    stdscr.addstr(controls_line + 1, 0, "Controls: [n]ext, [b]ack, [s]earch, [w]xyc, [q]uit")
+    
+    # Add WXYC library status if showing WXYC releases
+    if show_wxyc:
+        stdscr.addstr(controls_line, 12, "| [WXYC Library]")
     
     # Refresh the screen
     stdscr.refresh()
@@ -250,17 +314,24 @@ def main(stdscr):
 
     discogs = DiscogsSearch(key, secret)
     loading_screen = LoadingScreen(stdscr)
+    show_wxyc = False
 
     def handle_search():
         artist = get_input(stdscr, "Enter artist name: ")
         track = get_input(stdscr, "Enter track title: ")
         discogs.clear_cache()
+        curses.curs_set(0)
 
         loading_screen.start()
         results = discogs.search(artist, track)
         loading_screen.stop()
 
-        display_results(stdscr, results, discogs.current_page, discogs.total_pages)
+        # Start fetching WXYC releases in background
+        wxyc_thread = threading.Thread(target=discogs.fetch_wxyc_releases, args=(artist,))
+        wxyc_thread.daemon = True
+        wxyc_thread.start()
+
+        display_results(stdscr, results, discogs.current_page, discogs.total_pages, show_wxyc)
 
     # Initial search
     handle_search()
@@ -271,13 +342,32 @@ def main(stdscr):
             key = stdscr.getch()
             
             if key == ord('n'):
-                results = discogs.next_page(loading_screen)
-                display_results(stdscr, results, discogs.current_page, discogs.total_pages)
+                if show_wxyc:
+                    results = discogs.next_wxyc_page()
+                    display_results(stdscr, results, discogs.wxyc_current_page, discogs.wxyc_total_pages, show_wxyc)
+                else:
+                    results = discogs.next_page(loading_screen)
+                    display_results(stdscr, results, discogs.current_page, discogs.total_pages, show_wxyc)
             elif key == ord('b'):
-                results = discogs.previous_page(loading_screen)
-                display_results(stdscr, results, discogs.current_page, discogs.total_pages)
+                if show_wxyc:
+                    results = discogs.previous_wxyc_page()
+                    display_results(stdscr, results, discogs.wxyc_current_page, discogs.wxyc_total_pages, show_wxyc)
+                else:
+                    results = discogs.previous_page(loading_screen)
+                    display_results(stdscr, results, discogs.current_page, discogs.total_pages, show_wxyc)
             elif key == ord('s'):
                 handle_search()
+                show_wxyc = False
+            elif key == ord('w'):
+                if show_wxyc:
+                    show_wxyc = False
+                    results = discogs.get_page(discogs.current_page, loading_screen)
+                    display_results(stdscr, results, discogs.current_page, discogs.total_pages, show_wxyc)
+                else:
+                    show_wxyc = True
+                    results = discogs.get_wxyc_page(discogs.wxyc_current_page)
+                    display_results(stdscr, results, discogs.wxyc_current_page, discogs.wxyc_total_pages, show_wxyc)
+                
             elif key == ord('q') or key == 27:  # 27 is ESC key
                 break
         except KeyboardInterrupt:
